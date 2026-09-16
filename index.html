@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Comptoir — Gestion de restaurant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: { DEFAULT: '#1B211D', 800: '#232A24', 700: '#2E362F' },
+          parchment: { DEFAULT: '#F7F3EC', 100: '#FCFAF6' },
+          copper: { DEFAULT: '#B85C2E', 600: '#A24E24', 700: '#8A421F' },
+          herb: { DEFAULT: '#57694E', 600: '#485941' },
+          clay: '#C4784A',
+        },
+        fontFamily: {
+          display: ['Fraunces', 'serif'],
+          sans: ['Work Sans', 'sans-serif'],
+        },
+      }
+    }
+  }
+</script>
+<style>
+  body { font-family: 'Work Sans', sans-serif; }
+  .font-display { font-family: 'Fraunces', serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #C9BFAF; border-radius: 8px; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .nav-btn.active { background: #B85C2E; color: #FCFAF6; }
+  .nav-btn.active .nav-icon { color: #FCFAF6; }
+  .table-card { transition: transform .12s ease; }
+  .table-card:active { transform: scale(0.97); }
+  dialog::backdrop { background: rgba(27,33,29,0.55); }
+  dialog { border: none; border-radius: 1rem; padding: 0; }
+  input[type="number"]::-webkit-inner-spin-button { opacity: 1; }
+  .focus-ring:focus-visible { outline: 2px solid #B85C2E; outline-offset: 2px; }
+</style>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4b6cb7">
+<link rel="apple-touch-icon" href="icon.png"></head>
+<body class="bg-parchment text-ink min-h-screen">
+
+<div class="flex min-h-screen">
+
+  <!-- Sidebar (desktop) -->
+  <aside class="hidden md:flex md:flex-col w-60 bg-ink text-parchment shrink-0">
+    <div class="px-6 py-6 border-b border-white/10">
+      <h1 class="font-display italic text-2xl text-parchment">Comptoir</h1>
+      <p class="text-xs text-white/50 mt-1">Gestion de restaurant</p>
+    </div>
+    <nav class="flex-1 px-3 py-4 space-y-1" id="sidebar-nav"></nav>
+    <div class="px-6 py-4 border-t border-white/10 text-xs text-white/40" id="clock"></div>
+  </aside>
+
+  <!-- Main -->
+  <div class="flex-1 flex flex-col min-w-0">
+    <!-- Mobile top bar -->
+    <header class="md:hidden flex items-center justify-between px-4 py-3 bg-ink text-parchment">
+      <h1 class="font-display italic text-xl">Comptoir</h1>
+      <span id="mobile-view-title" class="text-sm text-white/60"></span>
+    </header>
+
+    <main class="flex-1 overflow-y-auto pb-20 md:pb-8">
+      <div id="app-content" class="max-w-6xl mx-auto px-4 md:px-8 py-6 md:py-10"></div>
+    </main>
+
+    <!-- Mobile bottom nav -->
+    <nav class="md:hidden fixed bottom-0 inset-x-0 bg-ink text-parchment flex justify-around py-2 border-t border-white/10" id="bottom-nav"></nav>
+  </div>
+</div>
+
+<dialog id="modal"></dialog>
+
+<script>
+/* ============ Données & persistance ============ */
+const STORAGE_KEY = 'comptoir_resto_v1';
+const uid = () => Math.random().toString(36).slice(2, 10);
+const money = n => (Math.round(n * 100) / 100).toFixed(2) + ' €';
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
+function defaultState() {
+  const cat = (name) => ({ id: uid(), name });
+  const categories = [cat('Entrées'), cat('Plats'), cat('Desserts'), cat('Boissons')];
+  const dish = (name, price, catIdx) => ({ id: uid(), name, price, categoryId: categories[catIdx].id, available: true });
+  const dishes = [
+    dish('Soupe à l’oignon', 6.5, 0), dish('Salade de chèvre chaud', 8, 0),
+    dish('Entrecôte grillée', 18.5, 1), dish('Magret de canard', 19, 1), dish('Risotto aux champignons', 14, 1),
+    dish('Tarte tatin', 7, 2), dish('Mousse au chocolat', 6.5, 2),
+    dish('Verre de vin rouge', 5, 3), dish('Eau minérale', 3, 3), dish('Café', 2.5, 3),
+  ];
+  const tables = Array.from({ length: 12 }, (_, i) => ({ id: uid(), number: i + 1, seats: i % 3 === 0 ? 2 : 4, status: 'libre' }));
+  return { categories, dishes, tables, orders: [], reservations: [], currentView: 'dashboard' };
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaultState();
+    const parsed = JSON.parse(raw);
+    return { ...defaultState(), ...parsed };
+  } catch (e) { return defaultState(); }
+}
+function saveState() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+let state = loadState();
+
+/* ============ Navigation ============ */
+const VIEWS = [
+  { id: 'dashboard', label: 'Tableau de bord', icon: '⌂' },
+  { id: 'tables', label: 'Tables & commandes', icon: '▦' },
+  { id: 'menu', label: 'Menu', icon: '☰' },
+  { id: 'reservations', label: 'Réservations', icon: '◷' },
+  { id: 'stats', label: 'Statistiques', icon: '↗' },
+];
+
+function buildNav() {
+  const sidebar = document.getElementById('sidebar-nav');
+  const bottom = document.getElementById('bottom-nav');
+  sidebar.innerHTML = VIEWS.map(v => `
+    <button data-nav="${v.id}" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-white/80 hover:bg-white/5 transition-colors focus-ring">
+      <span class="nav-icon text-white/50 w-4 text-center">${v.icon}</span>${v.label}
+    </button>`).join('');
+  bottom.innerHTML = VIEWS.map(v => `
+    <button data-nav="${v.id}" class="nav-btn flex flex-col items-center gap-0.5 px-3 py-1 rounded-lg text-[10px] text-white/70 focus-ring">
+      <span class="nav-icon text-base">${v.icon}</span>${v.label.split(' ')[0]}
+    </button>`).join('');
+  document.querySelectorAll('[data-nav]').forEach(btn => {
+    btn.addEventListener('click', () => navigate(btn.dataset.nav));
+  });
+}
+
+function navigate(view) {
+  state.currentView = view;
+  document.querySelectorAll('[data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === view));
+  document.getElementById('mobile-view-title').textContent = VIEWS.find(v => v.id === view)?.label || '';
+  render();
+}
+
+/* ============ Modal générique ============ */
+const modal = document.getElementById('modal');
+function openModal(html) {
+  modal.innerHTML = `<div class="w-[92vw] max-w-md bg-parchment-100 bg-parchment rounded-2xl overflow-hidden">${html}</div>`;
+  modal.showModal();
+}
+function closeModal() { modal.close(); }
+modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
+
+/* ============ Rendu principal ============ */
+function render() {
+  document.querySelectorAll('.view').forEach(v => v.remove());
+  const root = document.getElementById('app-content');
+  root.innerHTML = '';
+  const renderers = { dashboard: renderDashboard, tables: renderTables, menu: renderMenu, reservations: renderReservations, stats: renderStats };
+  (renderers[state.currentView] || renderDashboard)(root);
+}
+
+/* ============ Vue : Tableau de bord ============ */
+function renderDashboard(root) {
+  const today = todayStr();
+  const ordersToday = state.orders.filter(o => o.status === 'payée' && o.closedAt?.slice(0, 10) === today);
+  const revenueToday = ordersToday.reduce((s, o) => s + o.total, 0);
+  const avgTicket = ordersToday.length ? revenueToday / ordersToday.length : 0;
+  const occupied = state.tables.filter(t => t.status === 'occupée').length;
+
+  const dishCount = {};
+  ordersToday.forEach(o => o.items.forEach(it => { dishCount[it.dishId] = (dishCount[it.dishId] || 0) + it.qty; }));
+  const topDishes = Object.entries(dishCount).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    .map(([id, qty]) => ({ dish: state.dishes.find(d => d.id === id), qty }));
+
+  root.innerHTML = `
+    <h2 class="font-display italic text-3xl mb-1">Tableau de bord</h2>
+    <p class="text-ink/50 text-sm mb-8">Aperçu du service en cours</p>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+      ${statCard('Recette du jour', money(revenueToday))}
+      ${statCard('Commandes réglées', ordersToday.length)}
+      ${statCard('Ticket moyen', money(avgTicket))}
+      ${statCard('Tables occupées', occupied + ' / ' + state.tables.length)}
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-6">
+      <div class="bg-white rounded-xl border border-ink/10 p-5">
+        <h3 class="font-medium mb-4">Plats les plus vendus aujourd'hui</h3>
+        ${topDishes.length ? `<ul class="space-y-3">${topDishes.map(t => `
+          <li class="flex items-center justify-between text-sm">
+            <span>${t.dish ? t.dish.name : 'Plat supprimé'}</span>
+            <span class="text-ink/50">${t.qty} vendu${t.qty > 1 ? 's' : ''}</span>
+          </li>`).join('')}</ul>`
+      : `<p class="text-sm text-ink/40">Pas encore de vente aujourd'hui.</p>`}
+      </div>
+
+      <div class="bg-white rounded-xl border border-ink/10 p-5">
+        <h3 class="font-medium mb-4">État des tables</h3>
+        <div class="grid grid-cols-6 gap-2">
+          ${state.tables.map(t => `
+            <div class="aspect-square rounded-lg flex items-center justify-center text-sm font-medium ${t.status === 'occupée' ? 'bg-copper/15 text-copper-700' : 'bg-herb/10 text-herb-600'}">
+              ${t.number}
+            </div>`).join('')}
+        </div>
+        <button data-goto="tables" class="mt-4 text-sm text-copper hover:underline">Ouvrir la vue tables →</button>
+      </div>
+    </div>
+  `;
+  root.querySelector('[data-goto="tables"]').addEventListener('click', () => navigate('tables'));
+}
+
+function statCard(label, value) {
+  return `<div class="bg-white rounded-xl border border-ink/10 p-4">
+    <p class="text-xs text-ink/50 mb-1">${label}</p>
+    <p class="font-display text-2xl">${value}</p>
+  </div>`;
+}
+
+/* ============ Vue : Tables & commandes ============ */
+function renderTables(root) {
+  root.innerHTML = `
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="font-display italic text-3xl">Tables & commandes</h2>
+      <button id="add-table" class="text-sm text-copper hover:underline">+ Ajouter une table</button>
+    </div>
+    <p class="text-ink/50 text-sm mb-8">Touchez une table pour ouvrir sa commande</p>
+    <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+      ${state.tables.map(t => {
+        const order = state.orders.find(o => o.tableId === t.id && o.status === 'ouverte');
+        const occ = t.status === 'occupée';
+        return `
+        <button data-table="${t.id}" class="table-card focus-ring text-left rounded-xl border p-4 ${occ ? 'bg-copper/10 border-copper/30' : 'bg-white border-ink/10'}">
+          <p class="font-display text-xl mb-1">${t.number}</p>
+          <p class="text-xs text-ink/50">${t.seats} places</p>
+          <p class="text-xs mt-2 font-medium ${occ ? 'text-copper-700' : 'text-herb-600'}">${occ ? money(order?.total || 0) : 'Libre'}</p>
+        </button>`;
+      }).join('')}
+    </div>
+  `;
+  root.querySelectorAll('[data-table]').forEach(btn => btn.addEventListener('click', () => openOrderModal(btn.dataset.table)));
+  root.querySelector('#add-table').addEventListener('click', () => {
+    const number = Math.max(0, ...state.tables.map(t => t.number)) + 1;
+    state.tables.push({ id: uid(), number, seats: 4, status: 'libre' });
+    saveState(); render();
+  });
+}
+
+function openOrderModal(tableId) {
+  const table = state.tables.find(t => t.id === tableId);
+  let order = state.orders.find(o => o.tableId === tableId && o.status === 'ouverte');
+
+  const draw = () => {
+    const items = order ? order.items : [];
+    const total = items.reduce((s, it) => s + it.qty * (state.dishes.find(d => d.id === it.dishId)?.price || 0), 0);
+    if (order) order.total = total;
+
+    openModal(`
+      <div class="p-5 border-b border-ink/10 flex items-center justify-between">
+        <h3 class="font-display italic text-xl">Table ${table.number}</h3>
+        <button id="close-modal" class="text-ink/40 hover:text-ink text-xl leading-none focus-ring">✕</button>
+      </div>
+      <div class="p-5 max-h-[50vh] overflow-y-auto">
+        ${items.length ? `<ul class="space-y-2 mb-4">${items.map((it, idx) => {
+          const dish = state.dishes.find(d => d.id === it.dishId);
+          return `<li class="flex items-center justify-between gap-2 text-sm">
+            <span class="flex-1">${dish?.name || 'Plat supprimé'}</span>
+            <div class="flex items-center gap-2">
+              <button data-dec="${idx}" class="w-6 h-6 rounded-full bg-ink/5 focus-ring">−</button>
+              <span class="w-4 text-center">${it.qty}</span>
+              <button data-inc="${idx}" class="w-6 h-6 rounded-full bg-ink/5 focus-ring">+</button>
+            </div>
+            <span class="w-16 text-right text-ink/60">${money((dish?.price || 0) * it.qty)}</span>
+          </li>`;
+        }).join('')}</ul>` : `<p class="text-sm text-ink/40 mb-4">Aucun article pour l'instant.</p>`}
+
+        <label class="text-xs text-ink/50 block mb-2">Ajouter un plat</label>
+        <select id="dish-select" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm mb-2 focus-ring">
+          ${state.categories.map(c => `<optgroup label="${c.name}">
+            ${state.dishes.filter(d => d.categoryId === c.id && d.available).map(d => `<option value="${d.id}">${d.name} — ${money(d.price)}</option>`).join('')}
+          </optgroup>`).join('')}
+        </select>
+        <button id="add-item" class="w-full py-2 rounded-lg bg-ink/5 text-sm hover:bg-ink/10 focus-ring">Ajouter au ticket</button>
+      </div>
+      <div class="p-5 border-t border-ink/10">
+        <div class="flex items-center justify-between mb-4">
+          <span class="text-sm text-ink/60">Total</span>
+          <span class="font-display text-2xl">${money(total)}</span>
+        </div>
+        <div class="flex gap-2">
+          ${order ? `<button id="cancel-order" class="flex-1 py-2.5 rounded-lg border border-ink/15 text-sm hover:bg-ink/5 focus-ring">Annuler la commande</button>
+          <button id="pay-order" class="flex-1 py-2.5 rounded-lg bg-herb text-white text-sm font-medium hover:bg-herb-600 focus-ring">Encaisser</button>`
+        : `<p class="text-xs text-ink/40">Ajoutez un plat pour ouvrir la commande.</p>`}
+        </div>
+      </div>
+    `);
+
+    document.getElementById('close-modal').addEventListener('click', closeModal);
+    document.getElementById('add-item').addEventListener('click', () => {
+      const dishId = document.getElementById('dish-select').value;
+      if (!dishId) return;
+      if (!order) {
+        order = { id: uid(), tableId, items: [], status: 'ouverte', createdAt: new Date().toISOString(), total: 0 };
+        state.orders.push(order);
+        table.status = 'occupée';
+      }
+      const existing = order.items.find(it => it.dishId === dishId);
+      if (existing) existing.qty += 1; else order.items.push({ dishId, qty: 1 });
+      saveState(); draw();
+    });
+    modal.querySelectorAll('[data-inc]').forEach(b => b.addEventListener('click', () => { items[+b.dataset.inc].qty++; saveState(); draw(); }));
+    modal.querySelectorAll('[data-dec]').forEach(b => b.addEventListener('click', () => {
+      const it = items[+b.dataset.dec];
+      it.qty--; if (it.qty <= 0) items.splice(items.indexOf(it), 1);
+      saveState(); draw();
+    }));
+    const cancelBtn = document.getElementById('cancel-order');
+    if (cancelBtn) cancelBtn.addEventListener('click', () => {
+      state.orders = state.orders.filter(o => o.id !== order.id);
+      table.status = 'libre';
+      saveState(); closeModal(); render();
+    });
+    const payBtn = document.getElementById('pay-order');
+    if (payBtn) payBtn.addEventListener('click', () => {
+      order.status = 'payée';
+      order.closedAt = new Date().toISOString();
+      table.status = 'libre';
+      saveState(); closeModal(); render();
+    });
+  };
+  draw();
+}
+
+/* ============ Vue : Menu ============ */
+function renderMenu(root) {
+  root.innerHTML = `
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="font-display italic text-3xl">Menu</h2>
+      <div class="flex gap-2">
+        <button id="add-cat" class="text-sm text-copper hover:underline">+ Catégorie</button>
+        <button id="add-dish" class="text-sm text-copper hover:underline">+ Plat</button>
+      </div>
+    </div>
+    <p class="text-ink/50 text-sm mb-8">Gérez vos catégories et vos plats</p>
+    <div class="space-y-8">
+      ${state.categories.map(c => `
+        <div>
+          <h3 class="font-medium mb-3 flex items-center gap-2">${c.name}
+            <button data-del-cat="${c.id}" class="text-xs text-ink/30 hover:text-copper-700">supprimer</button>
+          </h3>
+          <div class="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
+            ${state.dishes.filter(d => d.categoryId === c.id).map(d => `
+              <div class="bg-white rounded-xl border border-ink/10 p-4 flex items-start justify-between ${d.available ? '' : 'opacity-50'}">
+                <div>
+                  <p class="font-medium text-sm">${d.name}</p>
+                  <p class="text-ink/50 text-sm mt-0.5">${money(d.price)}</p>
+                </div>
+                <div class="flex flex-col items-end gap-2">
+                  <button data-toggle-dish="${d.id}" class="text-xs ${d.available ? 'text-herb-600' : 'text-ink/40'} hover:underline">${d.available ? 'disponible' : 'indisponible'}</button>
+                  <button data-del-dish="${d.id}" class="text-xs text-ink/30 hover:text-copper-700">supprimer</button>
+                </div>
+              </div>`).join('') || `<p class="text-sm text-ink/40">Aucun plat dans cette catégorie.</p>`}
+          </div>
+        </div>`).join('')}
+    </div>
+  `;
+  root.querySelector('#add-cat').addEventListener('click', () => {
+    openModal(`
+      <div class="p-5 border-b border-ink/10"><h3 class="font-display italic text-xl">Nouvelle catégorie</h3></div>
+      <div class="p-5 space-y-3">
+        <input id="cat-name" type="text" placeholder="Nom de la catégorie" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+      </div>
+      <div class="p-5 border-t border-ink/10 flex gap-2">
+        <button id="cancel" class="flex-1 py-2.5 rounded-lg border border-ink/15 text-sm focus-ring">Annuler</button>
+        <button id="save" class="flex-1 py-2.5 rounded-lg bg-copper text-white text-sm font-medium focus-ring">Enregistrer</button>
+      </div>`);
+    document.getElementById('cancel').addEventListener('click', closeModal);
+    document.getElementById('save').addEventListener('click', () => {
+      const name = document.getElementById('cat-name').value.trim();
+      if (!name) return;
+      state.categories.push({ id: uid(), name });
+      saveState(); closeModal(); render();
+    });
+  });
+
+  root.querySelector('#add-dish').addEventListener('click', () => {
+    openModal(`
+      <div class="p-5 border-b border-ink/10"><h3 class="font-display italic text-xl">Nouveau plat</h3></div>
+      <div class="p-5 space-y-3">
+        <input id="dish-name" type="text" placeholder="Nom du plat" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+        <input id="dish-price" type="number" step="0.10" min="0" placeholder="Prix (€)" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+        <select id="dish-cat" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+          ${state.categories.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="p-5 border-t border-ink/10 flex gap-2">
+        <button id="cancel" class="flex-1 py-2.5 rounded-lg border border-ink/15 text-sm focus-ring">Annuler</button>
+        <button id="save" class="flex-1 py-2.5 rounded-lg bg-copper text-white text-sm font-medium focus-ring">Enregistrer</button>
+      </div>`);
+    document.getElementById('cancel').addEventListener('click', closeModal);
+    document.getElementById('save').addEventListener('click', () => {
+      const name = document.getElementById('dish-name').value.trim();
+      const price = parseFloat(document.getElementById('dish-price').value);
+      const categoryId = document.getElementById('dish-cat').value;
+      if (!name || isNaN(price)) return;
+      state.dishes.push({ id: uid(), name, price, categoryId, available: true });
+      saveState(); closeModal(); render();
+    });
+  });
+
+  root.querySelectorAll('[data-toggle-dish]').forEach(b => b.addEventListener('click', () => {
+    const d = state.dishes.find(d => d.id === b.dataset.toggleDish);
+    d.available = !d.available; saveState(); render();
+  }));
+  root.querySelectorAll('[data-del-dish]').forEach(b => b.addEventListener('click', () => {
+    state.dishes = state.dishes.filter(d => d.id !== b.dataset.delDish); saveState(); render();
+  }));
+  root.querySelectorAll('[data-del-cat]').forEach(b => b.addEventListener('click', () => {
+    state.categories = state.categories.filter(c => c.id !== b.dataset.delCat);
+    state.dishes = state.dishes.filter(d => d.categoryId !== b.dataset.delCat);
+    saveState(); render();
+  }));
+}
+
+/* ============ Vue : Réservations ============ */
+function renderReservations(root) {
+  const sorted = [...state.reservations].sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  root.innerHTML = `
+    <div class="flex items-center justify-between mb-1">
+      <h2 class="font-display italic text-3xl">Réservations</h2>
+      <button id="add-resa" class="text-sm text-copper hover:underline">+ Nouvelle réservation</button>
+    </div>
+    <p class="text-ink/50 text-sm mb-8">${sorted.length} réservation${sorted.length > 1 ? 's' : ''} enregistrée${sorted.length > 1 ? 's' : ''}</p>
+    ${sorted.length ? `<div class="space-y-2">${sorted.map(r => {
+      const table = state.tables.find(t => t.id === r.tableId);
+      return `<div class="bg-white rounded-xl border border-ink/10 p-4 flex items-center justify-between gap-4">
+        <div>
+          <p class="font-medium text-sm">${r.name} · ${r.people} pers.</p>
+          <p class="text-ink/50 text-xs mt-0.5">${formatDate(r.date)} à ${r.time}${table ? ' · Table ' + table.number : ''}${r.phone ? ' · ' + r.phone : ''}</p>
+        </div>
+        <button data-del-resa="${r.id}" class="text-xs text-ink/30 hover:text-copper-700 shrink-0">supprimer</button>
+      </div>`;
+    }).join('')}</div>` : `<p class="text-sm text-ink/40">Aucune réservation pour le moment.</p>`}
+  `;
+  root.querySelector('#add-resa').addEventListener('click', () => {
+    openModal(`
+      <div class="p-5 border-b border-ink/10"><h3 class="font-display italic text-xl">Nouvelle réservation</h3></div>
+      <div class="p-5 space-y-3">
+        <input id="r-name" type="text" placeholder="Nom du client" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+        <div class="grid grid-cols-2 gap-3">
+          <input id="r-date" type="date" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+          <input id="r-time" type="time" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <input id="r-people" type="number" min="1" placeholder="Nb. de personnes" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+          <select id="r-table" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+            <option value="">Table (optionnel)</option>
+            ${state.tables.map(t => `<option value="${t.id}">Table ${t.number}</option>`).join('')}
+          </select>
+        </div>
+        <input id="r-phone" type="tel" placeholder="Téléphone (optionnel)" class="w-full border border-ink/15 rounded-lg px-3 py-2 text-sm focus-ring">
+      </div>
+      <div class="p-5 border-t border-ink/10 flex gap-2">
+        <button id="cancel" class="flex-1 py-2.5 rounded-lg border border-ink/15 text-sm focus-ring">Annuler</button>
+        <button id="save" class="flex-1 py-2.5 rounded-lg bg-copper text-white text-sm font-medium focus-ring">Enregistrer</button>
+      </div>`);
+    document.getElementById('cancel').addEventListener('click', closeModal);
+    document.getElementById('save').addEventListener('click', () => {
+      const name = document.getElementById('r-name').value.trim();
+      const date = document.getElementById('r-date').value;
+      const time = document.getElementById('r-time').value;
+      const people = parseInt(document.getElementById('r-people').value) || 1;
+      const tableId = document.getElementById('r-table').value || null;
+      const phone = document.getElementById('r-phone').value.trim();
+      if (!name || !date || !time) return;
+      state.reservations.push({ id: uid(), name, date, time, people, tableId, phone });
+      saveState(); closeModal(); render();
+    });
+  });
+  root.querySelectorAll('[data-del-resa]').forEach(b => b.addEventListener('click', () => {
+    state.reservations = state.reservations.filter(r => r.id !== b.dataset.delResa);
+    saveState(); render();
+  }));
+}
+function formatDate(iso) {
+  const d = new Date(iso + 'T00:00:00');
+  return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+}
+
+/* ============ Vue : Statistiques ============ */
+function renderStats(root) {
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    return d.toISOString().slice(0, 10);
+  });
+  const revenueByDay = days.map(day =>
+    state.orders.filter(o => o.status === 'payée' && o.closedAt?.slice(0, 10) === day).reduce((s, o) => s + o.total, 0)
+  );
+  const weekTotal = revenueByDay.reduce((a, b) => a + b, 0);
+
+  const dishTotals = {};
+  state.orders.filter(o => o.status === 'payée').forEach(o => o.items.forEach(it => { dishTotals[it.dishId] = (dishTotals[it.dishId] || 0) + it.qty; }));
+  const top = Object.entries(dishTotals).sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([id, qty]) => ({ dish: state.dishes.find(d => d.id === id), qty }));
+
+  root.innerHTML = `
+    <h2 class="font-display italic text-3xl mb-1">Statistiques</h2>
+    <p class="text-ink/50 text-sm mb-8">Recette sur les 7 derniers jours : <span class="font-medium text-ink">${money(weekTotal)}</span></p>
+    <div class="bg-white rounded-xl border border-ink/10 p-5 mb-6">
+      <canvas id="chart" height="180"></canvas>
+    </div>
+    <div class="bg-white rounded-xl border border-ink/10 p-5">
+      <h3 class="font-medium mb-4">Plats les plus vendus (total)</h3>
+      ${top.length ? `<ul class="space-y-3">${top.map(t => `
+        <li class="flex items-center gap-3 text-sm">
+          <span class="flex-1">${t.dish ? t.dish.name : 'Plat supprimé'}</span>
+          <div class="flex-1 bg-ink/5 rounded-full h-2 overflow-hidden max-w-[120px]">
+            <div class="bg-copper h-full" style="width:${(t.qty / top[0].qty) * 100}%"></div>
+          </div>
+          <span class="text-ink/50 w-6 text-right">${t.qty}</span>
+        </li>`).join('')}</ul>` : `<p class="text-sm text-ink/40">Pas encore de données.</p>`}
+    </div>
+  `;
+  drawBarChart(document.getElementById('chart'), days, revenueByDay);
+}
+
+function drawBarChart(canvas, labels, values) {
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight || 180;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const max = Math.max(1, ...values);
+  const barW = w / labels.length * 0.5;
+  const gap = w / labels.length;
+  values.forEach((v, i) => {
+    const barH = (v / max) * (h - 30);
+    const x = i * gap + (gap - barW) / 2;
+    const y = h - 20 - barH;
+    ctx.fillStyle = '#B85C2E';
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(x, y, barW, barH, 4) : ctx.rect(x, y, barW, barH);
+    ctx.fill();
+    ctx.fillStyle = '#8A7F6E';
+    ctx.font = '11px Work Sans';
+    ctx.textAlign = 'center';
+    const d = new Date(labels[i] + 'T00:00:00');
+    ctx.fillText(d.toLocaleDateString('fr-FR', { weekday: 'short' }), x + barW / 2, h - 5);
+  });
+}
+
+/* ============ Horloge & init ============ */
+function tickClock() {
+  const el = document.getElementById('clock');
+  if (el) el.textContent = new Date().toLocaleString('fr-FR', { weekday: 'long', hour: '2-digit', minute: '2-digit' });
+}
+setInterval(tickClock, 1000 * 30);
+
+buildNav();
+tickClock();
+navigate('dashboard');
+window.addEventListener('resize', () => { if (state.currentView === 'stats') render(); });
+</script>
+
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js'));}</script>
+</body>
+</html>
